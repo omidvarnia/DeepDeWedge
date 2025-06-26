@@ -112,6 +112,12 @@ def fit_model(
             help="Path to a yaml file containing the argumens for this function. Comand line arguments will overwrite the ones in the yaml file.",
         ),
     ] = None,
+    use_cpu: Annotated[
+        bool,
+        typer.Option(
+            help="Force model fitting to run on CPU instead of GPU."
+        ),
+    ] = False,
 ):
     """
     Fit a U-Net model for denoising and missing wedge reconstruction on sub-tomograms. Typically run after `prepare-data`.
@@ -136,7 +142,7 @@ def fit_model(
     if not os.path.exists(logdir.parent):
         os.makedirs(logdir.parent)
     if logger == "tensorboard":
-        logger = pl.loggers.TensorBoardLogger(logdir.parent, name=logdir.name)
+        logger = pl.loggers.TensorBoardLogger(save_dir=logdir.parent, name=logdir.name)
     elif logger == "csv":
         logger = pl.loggers.CSVLogger(logdir.parent, name=logdir.name)
     else:
@@ -144,6 +150,8 @@ def fit_model(
             f"Logger '{logger}' not recognized. Choose from 'tensorboard' or 'csv'."
         )
     logdir = f"{logger.save_dir}/{logger.name}/version_{logger.version}"
+    if not os.path.exists(logdir):
+        os.makedirs(logdir, exist_ok=True)
     print(f"Saving logs and model checkpoints to '{logdir}'")
 
     # check if there are subtomos for validation
@@ -239,11 +247,19 @@ def fit_model(
         subtomo_dir=subtomo_dir,
         update_subtomo_missing_wedges_every_n_epochs=update_subtomo_missing_wedges_every_n_epochs,
     )
+    
+    if use_cpu:
+        accelerator = "cpu"
+        devices = 1
+    else:
+        accelerator = "gpu"
+        devices = [gpu]
+        
     # initialize the trainer
     trainer = pl.Trainer(
         max_epochs=num_epochs,
-        accelerator="gpu",
-        devices=[gpu],
+        accelerator=accelerator,
+        devices=devices,
         check_val_every_n_epoch=(
             check_val_every_n_epochs if val_data_exists else num_epochs
         ),
@@ -251,7 +267,6 @@ def fit_model(
         logger=logger,
         callbacks=callbacks,
         detect_anomaly=True,
-        resume_from_checkpoint=resume_from_checkpoint,
     )
     # fit the model
     if val_data_exists and trainer.resume_from_checkpoint is None:
