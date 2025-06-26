@@ -94,9 +94,9 @@ def refine_tomogram(
         ),
     ] = 0,
     gpu: Annotated[
-        Optional[int],
+        Optional[List[int]],
         typer.Option(
-            help="GPU id on which to run the model. If None, the model will be run on the CPU."
+            help="GPU id on which to run the model. If None, the model will be run on the CPU. Currently, only a single GPU is supported. Providing multiple GPUs will result in a warning and only the first GPU will be used."
         ),
     ] = None,
     config: Annotated[
@@ -132,7 +132,11 @@ def refine_tomogram(
     if subtomo_overlap is None:
         subtomo_overlap = int(math.ceil(subtomo_size / 3))
 
-    device = "cpu" if gpu is None else f"cuda:{gpu}"
+    if hasattr(gpu, "__len__"):
+        if len(gpu) > 1:
+            print(f"WARNING: Currently, only a single GPU is supported in 'ddw refine-tomogram'. You passed gpu={gpu}. Continuing with gpu={gpu[0]}.")
+        
+    device = "cpu" if gpu is None else f"cuda:{gpu[0]}"
     lightning_model = (
         LitUnet3D.load_from_checkpoint(model_checkpoint_file).to(device).eval()
     )
@@ -206,7 +210,7 @@ def _refine_single_tomogram(
     pbar_desc="Refining tomogram",
 ):
 
-    tomo = load_mrc_data(tomo_file).float().to(lightning_model.device)
+    tomo = load_mrc_data(tomo_file).float()#.to(lightning_model.device)
     # apply missing wedge mask here to be more consistent with data during model fitting
     mw_mask = get_missing_wedge_mask(tomo.shape, mw_angle, device=tomo.device)
     tomo = apply_fourier_mask_to_tomo(tomo, mw_mask)
@@ -221,6 +225,7 @@ def _refine_single_tomogram(
         enlarge_subtomos_for_rotating=False,
         pad_before_subtomo_extraction=True,
     )
+    
     subtomos = TensorDataset(torch.stack(subtomos))
     subtomo_loader = DataLoader(
         subtomos,
@@ -233,7 +238,8 @@ def _refine_single_tomogram(
         for batch in tqdm.tqdm(subtomo_loader, desc=pbar_desc):
             batch_subtomos = batch[0].to(lightning_model.device)
             model_output = lightning_model(batch_subtomos)
-            model_outputs.append(model_output.detach())
+            model_output = model_output.detach().cpu()
+            model_outputs.append(model_output)
     model_outputs = list(torch.concat(model_outputs, 0))
 
     tomo_ref = reassemble_subtomos(
