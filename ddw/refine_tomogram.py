@@ -99,6 +99,12 @@ def refine_tomogram(
             help="GPU id on which to run the model. If None, the model will be run on the CPU. Currently, only a single GPU is supported. Providing multiple GPUs will result in a warning and only the first GPU will be used."
         ),
     ] = None,
+    use_cpu: Annotated[
+        bool,
+        typer.Option(
+            help="Force using CPU even if GPU is available."
+        ),
+    ] = False,
     config: Annotated[
         Optional[Path],
         typer.Option(
@@ -111,6 +117,11 @@ def refine_tomogram(
     """
     Use a fitted U-Net to denoise tomograms and to fill in their missing wedge. Typically run after `fit-model`.
     """
+
+    print("Refining tomograms...")
+    # from ptpython.repl import embed
+    # embed(globals=globals(), locals=locals())
+
     if output_dir is None:
         if project_dir is not None:
             output_dir = f"{project_dir}/refined_tomograms"
@@ -135,14 +146,18 @@ def refine_tomogram(
     if hasattr(gpu, "__len__"):
         if len(gpu) > 1:
             print(f"WARNING: Currently, only a single GPU is supported in 'ddw refine-tomogram'. You passed gpu={gpu}. Continuing with gpu={gpu[0]}.")
-        
-    device = "cpu" if gpu is None else f"cuda:{gpu[0]}"
+
+    if use_cpu:
+        device = "cpu"
+    else:
+        device = "cpu" if gpu is None else f"cuda:{gpu[0]}"
     lightning_model = (
         LitUnet3D.load_from_checkpoint(model_checkpoint_file).to(device).eval()
     )
 
     with torch.no_grad():
         for t0_file, t1_file in zip(tomo0_files, tomo1_files):
+            print(f"Processing tomograms {t0_file} and {t1_file}...")
             if recompute_normalization:
                 loc, scale = get_avg_model_input_mean_and_std(
                     tomo_file=t0_file,
@@ -159,6 +174,7 @@ def refine_tomogram(
                     lightning_model.unet.normalization_scale.clone().detach().item(),
                 )
 
+            print(f"Using normalization loc={loc} and scale={scale} for tomograms {t0_file} and {t1_file}.")
             t_ref = _refine_single_tomogram(
                 tomo_file=t0_file,
                 lightning_model=lightning_model,
@@ -171,6 +187,9 @@ def refine_tomogram(
                 batch_size=batch_size,
                 pbar_desc="Refining tomo0",
             )
+            
+            # Refine the second tomogram and average the results
+            print(f"Refining tomogram {t1_file}...")
             t_ref += _refine_single_tomogram(
                 tomo_file=t1_file,
                 lightning_model=lightning_model,
@@ -183,6 +202,8 @@ def refine_tomogram(
                 batch_size=batch_size,
                 pbar_desc="Refining tomo1",
             )
+            
+            print(f"Refined tomograms {t0_file} and {t1_file} with shape {t_ref.shape}.")
             t_ref /= 2
             if return_tomos:
                 tomo_ref.append(t_ref)
@@ -225,6 +246,7 @@ def _refine_single_tomogram(
         enlarge_subtomos_for_rotating=False,
         pad_before_subtomo_extraction=True,
     )
+    print(f"Extracted {len(subtomos)} subtomograms from {tomo_file} with shape {tomo.shape}.")
     
     subtomos = TensorDataset(torch.stack(subtomos))
     subtomo_loader = DataLoader(
@@ -248,4 +270,6 @@ def _refine_single_tomogram(
         subtomo_overlap=subtomo_overlap,
         crop_to_size=tomo.shape,
     )
+    
+    print(f"Reassembled refined tomogram with shape {tomo_ref.shape} from {len(model_outputs)} subtomograms.")
     return tomo_ref

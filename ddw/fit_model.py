@@ -4,6 +4,7 @@ import inspect
 import os
 from pathlib import Path
 from typing import Optional
+import shutil
 
 import pytorch_lightning as pl
 import typer
@@ -148,6 +149,9 @@ def fit_model(
     # setup logger
     if not os.path.exists(logdir.parent):
         os.makedirs(logdir.parent)
+    if not os.path.exists(logdir):
+        os.makedirs(logdir, exist_ok=True)
+
     if logger == "tensorboard":
         logger = pl.loggers.TensorBoardLogger(save_dir=logdir.parent, name=logdir.name)
     elif logger == "csv":
@@ -156,9 +160,14 @@ def fit_model(
         raise ValueError(
             f"Logger '{logger}' not recognized. Choose from 'tensorboard' or 'csv'."
         )
-    logdir = f"{logger.save_dir}/{logger.name}/version_{logger.version}"
-    if not os.path.exists(logdir):
-        os.makedirs(logdir, exist_ok=True)
+        
+    logdir = f"{logger.save_dir}/{logger.name}/version_0" #version_{logger.version}"
+    if not os.path.exists(f"{logger.save_dir}/{logger.name}"):
+        os.makedirs(f"{logger.save_dir}/{logger.name}", exist_ok=True)
+    else:
+        shutil.rmtree(f"{logger.save_dir}/{logger.name}", ignore_errors=True)
+        os.makedirs(f"{logger.save_dir}/{logger.name}", exist_ok=True)
+        
     print(f"Saving logs and model checkpoints to '{logdir}'")
 
     # check if there are subtomos for validation
@@ -242,19 +251,19 @@ def fit_model(
         devices = 1
     else:
         accelerator = "gpu"
-        devices = [gpu]
+        devices = gpu
         
     # initialize the trainer
-    devices = [gpu] if isinstance(gpu, int) else gpu
-    strategy = pl.strategies.DDPStrategy(
-        process_group_backend=distributed_backend, 
-        find_unused_parameters=False,  # setting this to true gave a warning that it might slow things down
-    ) if len(devices) > 1 else None
+    # devices = [gpu] if isinstance(gpu, int) else gpu
+    # strategy = pl.strategies.DDPStrategy(
+    #     process_group_backend=distributed_backend, 
+    #     find_unused_parameters=False,  # setting this to true gave a warning that it might slow things down
+    # ) if len(devices) > 1 else None
     trainer = pl.Trainer(
         max_epochs=num_epochs,
         accelerator=accelerator,
         devices=devices,
-        strategy=strategy,
+        # strategy=strategy,
         check_val_every_n_epoch=(
             check_val_every_n_epochs if val_data_exists else num_epochs
         ),
